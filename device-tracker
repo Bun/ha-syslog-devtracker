@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+
+from re import compile
+from time import time
+
+REMOVE_EVENTS = {'disassociated', 'deauthenticated', 'AP-STA-DISCONNECTED'}
+
+r_con = compile(r'\S+ hostapd: \S+: (?P<kind>AP-STA-(DIS)?CONNECTED) (?P<mac>\S+)$')
+r_handshake = compile(r'\S+ hostapd: \S+: STA (?P<mac>\S+) WPA: (?P<kind>(group|pairwise) key handshake) completed \(RSN\)$')
+r_dhcp_ack = compile(r'\S+ dnsmasq-dhcp\[\d+\]: (?P<kind>DHCPACK)\(\S+\) \S+ (?P<mac>\S+) (?P<name>.*)$')
+r_80211 = compile(r'\S+ hostapd: \S+: STA (?P<mac>\S+) IEEE 802\.11: (?P<kind>\S+)( .*)?$')
+
+
+def track_device_event(data):
+    line = data.rstrip()
+    for r in (r_handshake,
+              r_dhcp_ack,
+              r_con,
+              r_80211):
+        m = r.search(line)
+        if m:
+            break
+    else:
+        return
+    props = m.groupdict()
+    if props['kind'] in REMOVE_EVENTS:
+        return props, 'remove'
+    else:
+        return props, 'add'
+
+
+class DeviceTrackerProtocol:
+    def __init__(self, mqtt):
+        self.mqtt = mqtt
+
+    def connection_made(self, transport):
+        self.transport = transport
+        self.device_state = {}
+        self._seen = set()
+
+    def datagram_received(self, data, addr):
+        message = data.decode('utf8', 'replace')
+        r = track_device_event(message)
+        if not r:
+            return
+        now = time()
+        props, event = r
+        mac = props['mac'].replace(':', '')
+        state = self.device_state.get(mac, {})
+        name = props.get('name') or state.get('name')
+        prefix = 'device/%s' % (mac,)
+        if name:
+            prefix += ' [%s]' % (name,)
+        prefix += ' ='
+        show = False
+        if event == 'add':
+            if mac not in self.device_state:
+                show = True
+                print(prefix, 'home')
+                self.device_state[mac] = {'since': now,
+                                          'last': now}
+            else:
+                if now - self.device_state[mac]['last'] > 60:
+                    print(prefix, 'home (alive)', now - self.device_state[mac]['since'])
+                self.device_state[mac]['last'] = now
+            if 'name' in props:
+                self.device_state[mac]['name'] = props['name']
+        else:
+            if mac not in self.device_state:
+                if mac not in self._seen:
+                    print(prefix, 'away')
+            else:
+                show = True
+                print(prefix, 'away // last event', now - self.device_state[mac]['last'])
+                del self.device_state[mac]
+        if show:
+            items = []
+            for k, v in self.device_state.items():
+                if 'name' in v:
+                    items.append('%s[%s]' % (k, v['name']))
+                else:
+                    items.append(k)
+            items.sort()
+            print(' '.join(items))
+        self._seen.add(mac)
+
+
+if __name__ == '__main__':
+    from asyncio import get_event_loop
+    from hbmqtt.client import MQTTClient
+
+    loop = get_event_loop()
+    m = MQTTClient
+    #loop.run_until_complete(m.connect('mqtt://localhost/'))
+    listen = loop.create_datagram_endpoint(lambda: DeviceTrackerProtocol(m),
+                                           local_addr=('0.0.0.0', 1514))
+    transport, protocol = loop.run_until_complete(listen)
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+
+    transport.close()
+    loop.close()
