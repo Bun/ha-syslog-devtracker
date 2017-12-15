@@ -5,8 +5,8 @@ tracker depends on syslog forwarding on e.g. a Linux-based DHCP server or
 router.
 
 Due to the nature of how this device tracker works, it is most suitable for
-cases where detecting when a device becomes online.
-
+detecting when devices come online.  Detecting when devices go offline may be
+subject to delays.
 
 Supported message formats:
 
@@ -29,11 +29,12 @@ or per device.
 ### Wired devices
 
 While it is straightforward to detect devices coming online based on the DHCP
-requests, detecting when a device has gone offline is more complicated since
-this is not logged in any sense.
+requests, detecting when a wired device has gone offline is more complicated
+since this does not appear in the log messages.
 
 If you are interested in tracking wired devices, you should set a reasonable
-
+DHCP lease timeout so that devices that do not renew their lease within that
+period can be marked offline.
 
 
 ## TODO
